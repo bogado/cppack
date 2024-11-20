@@ -5,6 +5,9 @@
 #ifndef CPPACK_PACKER_HPP
 #define CPPACK_PACKER_HPP
 
+#include <functional>
+#include <ranges>
+#include <type_traits>
 #include <vector>
 #include <set>
 #include <list>
@@ -91,58 +94,33 @@ enum FormatConstants : uint8_t {
 };
 
 template<class T>
-struct is_container {
-  static const bool value = false;
+concept is_map = std::ranges::sized_range<T> && requires(T map) {
+    { std::get<0>(*map.begin()) };
+    { std::get<1>(*map.begin()) };
 };
 
-template<class T, class Alloc>
-struct is_container<std::vector<T, Alloc> > {
-  static const bool value = true;
-};
-
-template<class T, class Alloc>
-struct is_container<std::list<T, Alloc> > {
-  static const bool value = true;
-};
-
-template<class T, class Alloc>
-struct is_container<std::map<T, Alloc> > {
-  static const bool value = true;
-};
-
-template<class T, class Alloc>
-struct is_container<std::unordered_map<T, Alloc> > {
-  static const bool value = true;
-};
-
-template<class T, class Alloc>
-struct is_container<std::set<T, Alloc> > {
-  static const bool value = true;
-};
+static_assert(is_map<std::map<std::string, bool>>);
 
 template<class T>
-struct is_stdarray {
-  static const bool value = false;
+concept is_container = requires(T container) {
+    { container.emplace_back(typename T::value_type{}) };
 };
-
-template<class T, std::size_t N>
-struct is_stdarray<std::array<T, N>> {
-  static const bool value = true;
-};
+static_assert(is_container<std::list<std::string>>);
+static_assert(is_container<std::vector<std::string>>);
 
 template<class T>
-struct is_map {
-  static const bool value = false;
-};
+concept is_stdarray = std::ranges::contiguous_range<T> && std::size(T{}) != 0;
 
-template<class T, class Alloc>
-struct is_map<std::map<T, Alloc> > {
-  static const bool value = true;
-};
+static_assert(!is_stdarray<std::vector<char>>);
+static_assert(is_stdarray<std::array<char,2>>);
 
-template<class T, class Alloc>
-struct is_map<std::unordered_map<T, Alloc> > {
-  static const bool value = true;
+namespace details {
+    void nop(auto &);
+}
+
+template<class T>
+concept is_packable = requires(const T& packable) {
+    { packable.pack(details::nop) };
 };
 
 class Packer {
@@ -171,9 +149,9 @@ class Packer {
 
   template<class T>
   void pack_type(const T &value) {
-    if constexpr(is_map<T>::value) {
+    if constexpr (is_map<T>) {
       pack_map(value);
-    } else if constexpr (is_container<T>::value || is_stdarray<T>::value) {
+    } else  if constexpr (std::ranges::range<T>) {
       pack_array(value);
     } else {
       auto recursive_packer = Packer{};
@@ -187,8 +165,7 @@ class Packer {
     pack_type(value.time_since_epoch().count());
   }
 
-  template<class T>
-  void pack_array(const T &array) {
+  void pack_array(const std::ranges::range auto &array) {
     if (array.size() < 16) {
       auto size_mask = uint8_t(0b10010000);
       serialized_object.emplace_back(uint8_t(array.size() | size_mask));
@@ -210,8 +187,7 @@ class Packer {
     }
   }
 
-  template<class T>
-  void pack_map(const T &map) {
+  void pack_map(const is_map auto &map) {
     if (map.size() < 16) {
       auto size_mask = uint8_t(0b10000000);
       serialized_object.emplace_back(uint8_t(map.size() | size_mask));
@@ -226,9 +202,9 @@ class Packer {
         serialized_object.emplace_back(uint8_t(map.size() >> (8U * (i - 1)) & 0xff));
       }
     }
-    for (const auto &elem : map) {
-      pack_type(std::get<0>(elem));
-      pack_type(std::get<1>(elem));
+    for (const auto &[key, value] : map) {
+      pack_type(key);
+      pack_type(value);
     }
   }
 
@@ -502,6 +478,11 @@ void Packer::pack_type(const std::vector<uint8_t> &value) {
   }
 }
 
+template <typename T>
+concept is_unpackable = requires(const T& unpackable) {
+    { unpackable(details::nop) };
+};
+
 class Unpacker {
  public:
   Unpacker() : data_pointer(nullptr), data_end(nullptr) {};
@@ -547,11 +528,11 @@ class Unpacker {
 
   template<class T>
   void unpack_type(T &value) {
-    if constexpr(is_map<T>::value) {
+    if constexpr(is_map<T>) {
       unpack_map(value);
-    } else if constexpr (is_container<T>::value) {
+    } else if constexpr (is_container<T>) {
       unpack_array(value);
-    } else if constexpr (is_stdarray<T>::value) {
+    } else if constexpr (is_stdarray<T>) {
       unpack_stdarray(value);
     } else {
       auto recursive_data = std::vector<uint8_t>{};
@@ -573,9 +554,10 @@ class Unpacker {
     value = TimepointType(DurationType(placeholder));
   }
 
-  template<class T>
+  template<is_container T>
   void unpack_array(T &array) {
-    using ValueType = typename T::value_type;
+    using ValueType = std::ranges::range_value_t<T>;
+
     if (safe_data() == array32) {
       safe_increment();
       std::size_t array_size = 0;
@@ -612,7 +594,7 @@ class Unpacker {
     }
   }
 
-  template<class T>
+  template<is_stdarray T>
   void unpack_stdarray(T &array) {
     using ValueType = typename T::value_type;
     auto vec = std::vector<ValueType>{};

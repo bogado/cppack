@@ -8,7 +8,7 @@ include(GNUInstallDirs)
 add_library(Msgpack INTERFACE)
 add_library(Msgpack::Msgpack ALIAS Msgpack)
 
-target_compile_features(Msgpack INTERFACE cxx_std_17)
+target_compile_features(Msgpack INTERFACE cxx_std_23)
 
 target_include_directories(Msgpack
                            INTERFACE
